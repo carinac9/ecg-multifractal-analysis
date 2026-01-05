@@ -1,5 +1,5 @@
 from sklearn.svm import SVC
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import RandomForestClassifier, VotingClassifier
 from sklearn.metrics import accuracy_score, confusion_matrix, precision_score, recall_score, f1_score, roc_auc_score
 from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.preprocessing import StandardScaler
@@ -35,28 +35,23 @@ def train_svc(X, y, test_size=0.2):
         print(
             f"PCA: Reduced to {pca.n_components} dimensions (explained variance: {sum(pca.explained_variance_ratio_):.2%})")
 
-    # Try Random Forest first (faster, often works better with multiple channels)
-    print("\n=== Training Random Forest ===")
+    # Create individual models
+    print("\n=== Training Individual Models ===")
+
+    # Random Forest (improved parameters)
     rf = RandomForestClassifier(
-        n_estimators=100, max_depth=10, class_weight='balanced', random_state=42, n_jobs=1)
+        n_estimators=150, max_depth=12, class_weight='balanced', random_state=42, n_jobs=1)
     rf.fit(X_train_scaled, y_train)
     preds_rf = rf.predict(X_test_scaled)
     preds_proba_rf = rf.predict_proba(X_test_scaled)[:, 1]
-
     acc_rf = accuracy_score(y_test, preds_rf)
     f1_rf = f1_score(y_test, preds_rf)
-    roc_auc_rf = roc_auc_score(y_test, preds_proba_rf)
+    print(f"RF - Accuracy: {acc_rf:.4f}, F1: {f1_rf:.4f}")
 
-    print(
-        f"RF - Accuracy: {acc_rf:.4f}, F1: {f1_rf:.4f}, ROC-AUC: {roc_auc_rf:.4f}")
-
-    # Also try SVM with reduced hyperparameters
-    print("\n=== Training SVM (tuned) ===")
-    param_grid = {
-        'C': [1, 10, 100],
-        'kernel': ['rbf', 'linear'],
-        'gamma': ['scale', 0.01]
-    }
+    # SVM with tuned hyperparameters
+    print("\n=== Training SVM ===")
+    param_grid = {'C': [1, 10, 100], 'kernel': [
+        'rbf', 'linear'], 'gamma': ['scale', 0.01]}
 
     svc = SVC(class_weight='balanced', random_state=42, probability=True)
     grid_search = GridSearchCV(svc, param_grid, cv=3, scoring='f1', n_jobs=1)
@@ -68,23 +63,40 @@ def train_svc(X, y, test_size=0.2):
     model_svm = grid_search.best_estimator_
     preds_svm = model_svm.predict(X_test_scaled)
     preds_proba_svm = model_svm.predict_proba(X_test_scaled)[:, 1]
-
     acc_svm = accuracy_score(y_test, preds_svm)
     f1_svm = f1_score(y_test, preds_svm)
-    roc_auc_svm = roc_auc_score(y_test, preds_proba_svm)
+    print(f"SVM - Accuracy: {acc_svm:.4f}, F1: {f1_svm:.4f}")
 
-    print(
-        f"SVM - Accuracy: {acc_svm:.4f}, F1: {f1_svm:.4f}, ROC-AUC: {roc_auc_svm:.4f}")
+    # Ensemble Voting (combines both models - paper supports this)
+    print("\n=== Training Ensemble Classifier ===")
+    voting_clf = VotingClassifier(
+        estimators=[('rf', rf), ('svm', model_svm)],
+        voting='soft',
+        weights=[1, 1]
+    )
+    voting_clf.fit(X_train_scaled, y_train)
+    preds_ensemble = voting_clf.predict(X_test_scaled)
+    preds_proba_ensemble = voting_clf.predict_proba(X_test_scaled)[:, 1]
+    acc_ensemble = accuracy_score(y_test, preds_ensemble)
+    f1_ensemble = f1_score(y_test, preds_ensemble)
+    print(f"Ensemble - Accuracy: {acc_ensemble:.4f}, F1: {f1_ensemble:.4f}")
 
-    # Use best model
-    if acc_rf > acc_svm:
-        print("\n✓ Using Random Forest (better accuracy)")
+    # Select best model
+    accuracies = {'RF': acc_rf, 'SVM': acc_svm, 'Ensemble': acc_ensemble}
+    best_name = max(accuracies, key=accuracies.get)
+    print(f"\n✓ Best model: {best_name}")
+
+    if best_name == 'Ensemble':
+        model = voting_clf
+        preds = preds_ensemble
+        preds_proba = preds_proba_ensemble
+        acc = acc_ensemble
+    elif best_name == 'RF':
         model = rf
         preds = preds_rf
         preds_proba = preds_proba_rf
         acc = acc_rf
     else:
-        print("\n✓ Using SVM (better accuracy)")
         model = model_svm
         preds = preds_svm
         preds_proba = preds_proba_svm
