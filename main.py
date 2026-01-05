@@ -5,9 +5,9 @@ import wfdb
 import matplotlib.pyplot as plt
 
 from src.preprocessing import preprocess_ecg
-from src.embedding import optimal_tau, embed
+from src.embedding import optimal_tau, embed, svd_project, correlation_dimension_fast, surrogate_signal
 from src.multifractal import multifractal_spectrum, subsample
-from src.features import extract_alpha0, extract_alpha_edges, compute_slopes
+from src.features import extract_paper_features
 from src.classification import train_svc
 
 
@@ -16,6 +16,10 @@ DATA_DIR = "data/ptbdb"
 M = 4
 TAU = 198
 Q_VALS = np.linspace(-5, 5, 51)
+
+# Paper uses ALL 12 ECG leads (V1-V6 + more)
+# PTB-DB has channels: I, II, III, aVR, aVL, aVF, V1, V2, V3, V4, V5, V6
+ALL_CHANNELS = list(range(12))  # 0-11 for all channels
 
 
 # LOAD PATIENT LIST
@@ -33,52 +37,70 @@ for rec in all_records:
         patient_to_record[p] = rec
 
 
-# FEATURE EXTRACTION
+# FEATURE EXTRACTION (Multi-channel analysis - ALL ECG leads)
 X = []
 y = []
+nonlinearity_checks = []
 
 for patient, record in patient_to_record.items():
 
     full_path = f"{DATA_DIR}/{record}"
 
     try:
-        # no channel 6 -> skip automatically
-        sig, meta = wfdb.rdsamp(full_path, channels=[6])
-        sig = sig.flatten()
+        # Load ALL ECG channels (paper uses V1-V6 and more)
+        sig, meta = wfdb.rdsamp(full_path)  # Load all channels
         fs = meta['fs']
 
-        # preprocess
-        sig_p = preprocess_ecg(sig, fs)
+        # Extract features from each channel
+        patient_features = []
 
-        # embed
-        Y = embed(sig_p, M, TAU)
-        Y_sub = subsample(Y)
+        for ch_idx in range(min(12, sig.shape[1])):  # Up to 12 channels
+            try:
+                sig_ch = sig[:, ch_idx]
 
-        # multifractal spectrum
-        alpha, f = multifractal_spectrum(Y_sub, Q_VALS)
+                # STEP 1: Preprocess
+                sig_p = preprocess_ecg(sig_ch, fs)
 
-        # extract features
-        a0 = extract_alpha0(alpha, f)
-        a1, a2 = extract_alpha_edges(alpha, f)
-        width = a2 - a1
-        g1, g2 = compute_slopes(alpha, f)
+                # STEP 2: Delay embedding
+                Y = embed(sig_p, M, TAU)
 
-        X.append([a0, a1, a2, width, g1, g2])
+                # STEP 3: SVD projection (noise-robust - per paper)
+                Y_svd = svd_project(Y, n_components=None)
 
-        # label
-        label = 0 if patient in healthy_list else 1
-        y.append(label)
+                # STEP 4: Subsample for multifractal computation
+                Y_sub = subsample(Y_svd)
+
+                # STEP 5: Compute multifractal spectrum
+                alpha, f = multifractal_spectrum(Y_sub, Q_VALS)
+
+                # STEP 6: Extract features (α₁, γ₁, α₀, width)
+                a1, g1, a0, width = extract_paper_features(alpha, f)
+                patient_features.extend([a1, g1, a0, width])
+
+            except Exception:
+                continue
+
+        # Only add patient if we got features from multiple channels
+        if len(patient_features) >= 16:  # At least 4 channels worth
+            X.append(patient_features)
+
+            # Label: 0=healthy, 1=pathological
+            label = 0 if patient in healthy_list else 1
+            y.append(label)
+            nonlinearity_checks.append(True)  # Multi-channel is more robust
 
     except Exception as e:
-        print("Error processing", patient, "->", e)
+        print(f"Error processing {patient} -> {e}")
 
 
 X = np.array(X)
 y = np.array(y)
 
 print("Extracted dataset shape:", X.shape)
+print(f"Features: Multi-channel (4 features × {X.shape[1]//4} channels)")
 label_counts = Counter(y.tolist())
 print("Label distribution:", label_counts)
+print(f"Patients processed: {len(y)}")
 
 
 # CLASSIFICATION
