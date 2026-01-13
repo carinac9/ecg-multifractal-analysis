@@ -2,25 +2,21 @@ import numpy as np
 
 
 def subsample(Y, n=5000):
-    """Subsample attractor points uniformly."""
     step = max(1, len(Y) // n)
     return Y[::step][:n]
 
 
 def multifractal_spectrum(Y, q_vals, num_boxes=50):
-    """Simplified Harikrishnan multifractal spectrum."""
-    # Basic validation
+
     if Y is None or len(Y) == 0:
         alpha = np.zeros_like(q_vals, dtype=float)
         f_alpha = np.zeros_like(q_vals, dtype=float)
         f_alpha[len(f_alpha) // 2] = 1.0
         return alpha, f_alpha
 
-    # normalize per-dimension, project to 1D
     denom = (Y.max(axis=0) - Y.min(axis=0)) + 1e-12
     Y_norm = (Y - Y.min(axis=0)) / denom
 
-    # project to 1D (first dimension)
     try:
         Y1 = Y_norm[:, 0]
     except Exception:
@@ -29,7 +25,6 @@ def multifractal_spectrum(Y, q_vals, num_boxes=50):
         f_alpha[len(f_alpha) // 2] = 1.0
         return alpha, f_alpha
 
-    # histogram-based probability estimate
     hist, _ = np.histogram(Y1, bins=num_boxes, density=True)
     total = np.sum(hist)
     if total <= 0:
